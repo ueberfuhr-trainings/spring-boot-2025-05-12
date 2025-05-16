@@ -1,6 +1,7 @@
 package de.schulung.spring.customers.boundary;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import de.schulung.spring.customers.boundary.testsupport.AutoConfigureCustomerApiTestClient;
+import de.schulung.spring.customers.boundary.testsupport.CustomerApiTestClient;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import org.junit.jupiter.api.Test;
@@ -8,87 +9,47 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest
-@AutoConfigureMockMvc
+@AutoConfigureCustomerApiTestClient
 class CustomerApiTests {
 
   @Autowired
-  MockMvc mvc;
+  CustomerApiTestClient testClient;
 
   // GET /customers -> 200
   @Test
-  void shouldGetCustomers() throws Exception {
-    var newCustomerBody = mvc.perform(
-        post("/customers")
-          .contentType(MediaType.APPLICATION_JSON)
-          .content("""
-              {
-                "name": "Tom Mayer",
-                "birthdate": "2005-05-12",
-                "state": "active"
-              }
-            """)
-          .accept(MediaType.APPLICATION_JSON)
-      )
-      .andExpect(status().isCreated())
-      .andReturn()
-      .getResponse()
-      .getContentAsString();
-    var uuid = new ObjectMapper()
-      .readTree(newCustomerBody)
-      .path("uuid")
-      .asText();
+  void shouldGetCustomers() {
+    var newCustomer = testClient
+      .requestCreateCustomerAndReturn();
 
-    mvc
-      .perform(
-        get("/customers")
-          .accept(MediaType.APPLICATION_JSON)
-      )
-      .andExpect(status().isOk())
-      .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-      .andExpect(
-        jsonPath(
-          String
-            .format(
-              "$[?(@.uuid == '%s' && @.name == '%s' && @.birthdate == '%s' && @.state == '%s')]",
-              uuid,
-              "Tom Mayer",
-              "2005-05-12",
-              "active"
-            )
-        )
-          .exists()
-      );
+    testClient
+      .requestGetCustomersAndExpectToContainCustomer(newCustomer);
 
   }
 
   // GET /customers -> 406
   @Test
   void shouldNotGetCustomersAsXml() throws Exception {
-    mvc
-      .perform(
-        get("/customers")
-          .accept(MediaType.APPLICATION_XML)
+    testClient
+      .requestGetCustomers(
+        req -> req.accept(MediaType.APPLICATION_XML)
       )
       .andExpect(status().isNotAcceptable());
   }
 
   @Test
   void shouldNotGetCustomersWithInvalidStateParameter() throws Exception {
-    mvc
-      .perform(
-        get("/customers")
-          .param("state", "gelbekatze")
-          .accept(MediaType.APPLICATION_JSON)
+    testClient
+      .requestGetCustomers(
+        req -> req.state("gelbekatze")
       )
       .andExpect(status().isBadRequest());
   }
@@ -104,129 +65,44 @@ class CustomerApiTests {
 
   @ParameterizedTest
   @EnumSource(StateParameter.class)
-  void shouldGetCustomersByState(StateParameter parameter) throws Exception {
-    var newCustomerBody = mvc.perform(
-        post("/customers")
-          .contentType(MediaType.APPLICATION_JSON)
-          .content(String.format(
-              """
-                  {
-                    "name": "Tom Mayer",
-                    "birthdate": "2005-05-12",
-                    "state": "%s"
-                  }
-                """,
-              parameter.getParameterValue()
-            )
-          )
-          .accept(MediaType.APPLICATION_JSON)
-      )
-      .andExpect(status().isCreated())
-      .andReturn()
-      .getResponse()
-      .getContentAsString();
-    var uuid = new ObjectMapper()
-      .readTree(newCustomerBody)
-      .path("uuid")
-      .asText();
+  void shouldGetCustomersByState(StateParameter parameter) {
+    var newCustomer = testClient
+      .requestCreateCustomerAndReturn(
+        customer -> customer.state(parameter.getParameterValue())
+      );
 
     // we need to find it with the state parameter
-    mvc
-      .perform(
-        get("/customers")
-          .param("state", parameter.getParameterValue())
-          .accept(MediaType.APPLICATION_JSON)
-      )
-      .andExpect(status().isOk())
-      .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-      .andExpect(
-        jsonPath(
-          String
-            .format(
-              "$[?(@.uuid == '%s')]",
-              uuid
-            )
-        )
-          .exists()
+    testClient
+      .requestGetCustomersAndExpectToContainCustomer(
+        req -> req.state(parameter.getParameterValue()),
+        newCustomer
       );
     // we must not find it with other state parameters
     for (StateParameter p : StateParameter.values()) {
       if (p != parameter) {
-        mvc
-          .perform(
-            get("/customers")
-              .param("state", p.getParameterValue())
-              .accept(MediaType.APPLICATION_JSON)
-          )
-          .andExpect(status().isOk())
-          .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-          .andExpect(
-            jsonPath(
-              String
-                .format(
-                  "$[?(@.uuid == '%s')]",
-                  uuid
-                )
-            )
-              .doesNotExist()
+        testClient
+          .requestGetCustomersAndExpectNotToContainCustomer(
+            req -> req.state(p.getParameterValue()),
+            newCustomer
           );
       }
     }
 
   }
 
-  /*
-   * POST /customers
-   * Content-Type: application/json
-   * Accept: application/json
-   * {
-        "name": "Tom Mayer",
-        "birthdate": "2005-05-12",
-        "state": "active"
-      }
-   * ->
-   * 201
-   * Content-Type: application/json
-   * {
-        "uuid": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-        "name": "Tom Mayer",
-        "birthdate": "2005-05-12",
-        "state": "active"
-      }
-   * Location-Header existiert
-   */
   @Test
   void shouldCreateReturnAndDeleteCustomer() throws Exception {
-    var location = mvc.perform(
-        post("/customers")
-          .contentType(MediaType.APPLICATION_JSON)
-          .content("""
-              {
-                "name": "Tom Mayer",
-                "birthdate": "2005-05-12",
-                "state": "active"
-              }
-            """)
-          .accept(MediaType.APPLICATION_JSON)
-      )
-      .andExpect(status().isCreated())
-      .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-      .andExpect(jsonPath("$.name").value("Tom Mayer"))
-      .andExpect(jsonPath("$.birthdate").value("2005-05-12"))
-      .andExpect(jsonPath("$.state").value("active"))
-      .andExpect(jsonPath("$.uuid").isNotEmpty())
-      .andExpect(header().exists("Location"))
-      .andReturn()
-      .getResponse()
-      .getHeader("Location");
+    var newCustomer = testClient
+      .requestCreateCustomerAndReturn();
 
-    assertThat(location)
+    assertThat(newCustomer.getLocation())
       .isNotBlank();
 
     // read customer - 200
-    mvc
+    testClient
+      .getMvc()
       .perform(
-        get(location)
+        get(newCustomer.getLocation())
           .accept(MediaType.APPLICATION_JSON)
       )
       .andExpect(status().isOk())
@@ -236,23 +112,26 @@ class CustomerApiTests {
       .andExpect(jsonPath("$.state").value("active"));
 
     // delete customer - 204
-    mvc
+    testClient
+      .getMvc()
       .perform(
-        delete(location)
+        delete(newCustomer.getLocation())
       )
       .andExpect(status().isNoContent());
 
     // delete customer again - 404
-    mvc
+    testClient
+      .getMvc()
       .perform(
-        delete(location)
+        delete(newCustomer.getLocation())
       )
       .andExpect(status().isNotFound());
 
     // read customer - 404
-    mvc
+    testClient
+      .getMvc()
       .perform(
-        get(location)
+        get(newCustomer.getLocation())
           .accept(MediaType.APPLICATION_JSON)
       )
       .andExpect(status().isNotFound());
@@ -261,28 +140,20 @@ class CustomerApiTests {
 
   @Test
   void shouldNotCreateCustomerAsXml() throws Exception {
-    mvc.perform(
-        post("/customers")
+    testClient
+      .requestCreateCustomer(
+        req -> req
           .contentType(MediaType.APPLICATION_XML)
-          .content("<customer/>")
-          .accept(MediaType.APPLICATION_JSON)
+          .body("<customer/>")
       )
       .andExpect(status().isUnsupportedMediaType());
   }
 
   @Test
   void shouldNotCreateCustomerAndReturnXml() throws Exception {
-    mvc.perform(
-        post("/customers")
-          .contentType(MediaType.APPLICATION_JSON)
-          .content("""
-              {
-                "name": "Tom Mayer",
-                "birthdate": "2005-05-12",
-                "state": "active"
-              }
-            """)
-          .accept(MediaType.APPLICATION_XML)
+    testClient
+      .requestCreateCustomer(
+        req -> req.accept(MediaType.APPLICATION_XML)
       )
       .andExpect(status().isNotAcceptable());
   }
@@ -338,31 +209,22 @@ class CustomerApiTests {
       """,
   })
   void shouldNotCreateInvalidCustomer(String body) throws Exception {
-    mvc.perform(
-        post("/customers")
-          .contentType(MediaType.APPLICATION_JSON)
-          .content(body)
-          .accept(MediaType.APPLICATION_JSON)
+    testClient
+      .requestCreateCustomer(
+        req -> req.body(body)
       )
       .andExpect(status().isBadRequest());
   }
 
   @Test
-  void shouldCreateCustomerWithDefaultState() throws Exception {
-    mvc.perform(
-        post("/customers")
-          .contentType(MediaType.APPLICATION_JSON)
-          .content("""
-              {
-                "name": "Tom Mayer",
-                "birthdate": "2005-05-12"
-              }
-            """)
-          .accept(MediaType.APPLICATION_JSON)
-      )
-      .andExpect(status().isCreated())
-      .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-      .andExpect(jsonPath("$.state").value("active"));
+  void shouldCreateCustomerWithDefaultState() {
+    var newCustomer = testClient
+      .requestCreateCustomerAndReturn(
+        customer -> customer.state(null)
+      );
+    assertThat(newCustomer.getResult().getState())
+      .isNotNull()
+      .isEqualTo("active");
   }
 
 }
